@@ -1,0 +1,350 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/jetbrains-mono";
+
+/*
+ * Design tokens ported from the Composio landing design system
+ * (ComposioHQ/landing src/styles/globals.css). Two surfaces: light (default
+ * :root) and DEV dark (`.dark` on <html>). Components use the token utilities
+ * (bg-background, text-foreground, bg-brand, …), never raw hex.
+ *
+ * House rules: sans never goes bold (400/500 only), mono + uppercase +
+ * tracking-wider carries the chrome, primary CTAs are square, chips are
+ * rounded-xs, cards are rounded-xl.
+ */
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --font-sans:
+    "Geist Variable", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono:
+    "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  --leading-tight: 1.1;
+  --leading-snug: 1.2;
+  --tracking-default: -0.011em;
+
+  --container-page: 1240px;
+  --container-prose: 720px;
+  --container-narrow: 520px;
+  --container-tight: 380px;
+}
+
+@theme inline {
+  --radius-xs: 4px;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --shadow-elevated: 0 24px 60px -22px rgba(0, 0, 0, 0.12), 0 6px 18px -10px rgba(0, 0, 0, 0.06);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-panel: var(--panel);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-active: var(--brand-active);
+  --color-brand-readable: var(--brand-readable);
+  --color-highlight: var(--highlight);
+  --color-highlight-foreground: var(--highlight-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+
+  --animate-pulse-dot: pulse-dot 2s ease-in-out infinite;
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+}
+
+:root {
+  --radius: 0.625rem;
+
+  /* Surfaces */
+  --background: #f6f6f6;
+  --card: #ffffff;
+  --popover: #fafafa;
+  --panel: #ffffff;
+
+  /* Text */
+  --foreground: #0f0f0f;
+  --card-foreground: #0f0f0f;
+  --popover-foreground: #0f0f0f;
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+
+  /* Brand: sky blue on light */
+  --brand: #51a2ff;
+  --brand-hover: #3590f5;
+  --brand-active: #1f7ee8;
+  --brand-readable: #0007cd;
+
+  --highlight: #d4ff4a;
+  --highlight-foreground: #0f0f0f;
+
+  /* Borders / inputs */
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+
+  /* Semantic: use only for what the name means */
+  --destructive: oklch(0.577 0.215 27.3);
+  --destructive-foreground: oklch(1 0 0);
+  --success: oklch(0.546 0.16 155.8);
+  --success-foreground: oklch(1 0 0);
+  --warning: oklch(0.666 0.16 75);
+  --warning-foreground: oklch(0.218 0 0);
+
+  /* Terminal: surfaces from the panel, ANSI colors tuned to read on it */
+  --term-background: var(--panel);
+  --term-foreground: #1f1f1f;
+  --term-cursor: var(--brand-readable);
+  --term-selection: rgb(81 162 255 / 0.28);
+  --term-black: #1f1f1f;
+  --term-red: #c4262e;
+  --term-green: #1a7f37;
+  --term-yellow: #9a6700;
+  --term-blue: #0007cd;
+  --term-magenta: #8250df;
+  --term-cyan: #1b7c83;
+  --term-white: #6e7781;
+  --term-bright-black: #57606a;
+  --term-bright-red: #d1242f;
+  --term-bright-green: #2da44e;
+  --term-bright-yellow: #bf8700;
+  --term-bright-blue: #3590f5;
+  --term-bright-magenta: #a475f9;
+  --term-bright-cyan: #3192aa;
+  --term-bright-white: #8c959f;
+
+  color-scheme: light;
+}
+
+.dark {
+  /* Surfaces: warm near-black */
+  --background: #0f0f0f;
+  --card: #1e1e1e;
+  --popover: #2a2a2a;
+  --panel: #151515;
+
+  /* Text */
+  --foreground: #ffffff;
+  --card-foreground: #ffffff;
+  --popover-foreground: #ffffff;
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+
+  /* Brand: deep blue on dark; sky blue where brand-colored text must read */
+  --brand: #0007cd;
+  --brand-hover: #0009f0;
+  --brand-active: #0005a8;
+  --brand-readable: #51a2ff;
+
+  --highlight: #c9f53a;
+  --highlight-foreground: #0f0f0f;
+
+  --border: #2c2c2c;
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+
+  --destructive: oklch(0.637 0.208 25.3);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.648 0.17 155.8);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.758 0.163 75);
+  --warning-foreground: oklch(0.218 0 0);
+
+  --term-background: var(--panel);
+  --term-foreground: #e6e6e6;
+  --term-cursor: var(--brand-readable);
+  --term-selection: rgb(81 162 255 / 0.3);
+  --term-black: #2c2c2c;
+  --term-red: #ff6b6b;
+  --term-green: #4ade80;
+  --term-yellow: #facc15;
+  --term-blue: #51a2ff;
+  --term-magenta: #c084fc;
+  --term-cyan: #22d3ee;
+  --term-white: #d4d4d4;
+  --term-bright-black: #6b6b6b;
+  --term-bright-red: #ff8787;
+  --term-bright-green: #86efac;
+  --term-bright-yellow: #fde047;
+  --term-bright-blue: #8ec5ff;
+  --term-bright-magenta: #d8b4fe;
+  --term-bright-cyan: #67e8f9;
+  --term-bright-white: #ffffff;
+
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--brand) 35%, transparent);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--foreground) 18%, transparent) transparent;
+  }
+}
+
+/* Typography tokens: each bundles size + weight + leading + tracking. */
+@utility text-display {
+  @apply font-normal font-sans text-4xl leading-none tracking-tight md:text-5xl lg:text-[64px];
+}
+
+@utility text-h1 {
+  @apply font-normal font-sans text-2xl leading-tight tracking-tight md:text-4xl lg:text-[44px];
+}
+
+@utility text-h2 {
+  @apply font-medium font-sans text-xl leading-tight tracking-tight md:text-2xl;
+}
+
+@utility text-h3 {
+  @apply font-normal font-sans text-lg leading-snug;
+}
+
+@utility text-body-lg {
+  @apply font-sans text-lg leading-normal tracking-default;
+}
+
+@utility text-body {
+  @apply font-sans text-base leading-normal tracking-default;
+}
+
+@utility text-body-sm {
+  @apply font-sans text-sm leading-normal tracking-default;
+}
+
+@utility text-caption {
+  @apply font-sans text-xs leading-normal tracking-default;
+}
+
+@utility text-mono-md {
+  @apply font-mono text-[13px] leading-relaxed;
+}
+
+@utility text-mono-sm {
+  @apply font-mono text-[11px] leading-snug;
+}
+
+@utility text-mono-xs {
+  @apply font-mono text-[10px] leading-snug;
+}
+
+@layer components {
+  /* Rendered agent markdown. */
+  .chat-prose {
+    @apply text-body-sm text-foreground/90;
+    overflow-wrap: anywhere;
+  }
+  .chat-prose > * + * {
+    margin-top: 0.75rem;
+  }
+  .chat-prose h1,
+  .chat-prose h2,
+  .chat-prose h3,
+  .chat-prose h4 {
+    @apply font-medium text-foreground;
+    letter-spacing: -0.02em;
+  }
+  .chat-prose h1 {
+    font-size: 1.25rem;
+  }
+  .chat-prose h2 {
+    font-size: 1.125rem;
+  }
+  .chat-prose h3,
+  .chat-prose h4 {
+    font-size: 1rem;
+  }
+  .chat-prose strong {
+    @apply font-medium text-foreground;
+  }
+  .chat-prose a {
+    color: var(--brand-readable);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .chat-prose ul {
+    list-style: disc;
+    padding-left: 1.25rem;
+  }
+  .chat-prose ol {
+    list-style: decimal;
+    padding-left: 1.25rem;
+  }
+  .chat-prose li + li {
+    margin-top: 0.25rem;
+  }
+  .chat-prose li::marker {
+    color: color-mix(in oklab, var(--foreground) 35%, transparent);
+  }
+  .chat-prose code {
+    @apply rounded-xs font-mono;
+    font-size: 0.85em;
+    background: color-mix(in oklab, var(--foreground) 8%, transparent);
+    padding: 0.1rem 0.3rem;
+  }
+  .chat-prose pre {
+    @apply rounded-xs border bg-card text-mono-md;
+    overflow-x: auto;
+    padding: 0.75rem 1rem;
+  }
+  .chat-prose pre code {
+    background: transparent;
+    padding: 0;
+    font-size: inherit;
+  }
+  .chat-prose blockquote {
+    border-left: 2px solid var(--brand);
+    padding-left: 0.875rem;
+    color: color-mix(in oklab, var(--foreground) 65%, transparent);
+  }
+  .chat-prose table {
+    @apply text-caption;
+    border-collapse: collapse;
+  }
+  .chat-prose th,
+  .chat-prose td {
+    @apply border px-2 py-1 text-left;
+  }
+  .chat-prose th {
+    @apply font-medium;
+  }
+  .chat-prose hr {
+    @apply border-border;
+  }
+}

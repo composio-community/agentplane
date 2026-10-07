@@ -1,0 +1,30 @@
+{
+  "name": "@agentplane/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "agentplane": "./src/bin.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch --clear-screen=false src/bin.ts --dev",
+    "start": "tsx src/bin.ts",
+    "spike": "tsx scripts/spike.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.7.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.0",
+    "@composio/core": "^0.22.0",
+    "@agentplane/contracts": "workspace:*",
+    "node-pty": "^1.1.0",
+    "ws": "^8.18.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.0",
+    "tsx": "^4.20.0"
+  }
+}

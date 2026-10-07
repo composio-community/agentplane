@@ -1,0 +1,23 @@
+{
+  "name": "agentplane",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@12.5.1",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @agentplane/server --filter @agentplane/web dev",
+    "build": "pnpm -r build",
+    "start": "pnpm --filter @agentplane/server start",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "spike": "pnpm --filter @agentplane/server spike"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.0",
+    "typescript": "^5.9.0"
+  }
+}
