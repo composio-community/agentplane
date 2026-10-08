@@ -116,7 +116,7 @@ export function sdkComposioApi(apiKey: string): ComposioApi {
           logo: typeof item.meta?.logo === "string" ? item.meta.logo : null,
           triggers: Number(item.meta?.triggersCount ?? item.meta?.triggers_count ?? 0),
         }))
-        .filter((toolkit) => toolkit.slug && toolkit.triggers > 0)
+        .filter((toolkit) => toolkit.slug)
         .sort((a, b) => b.triggers - a.triggers || a.name.localeCompare(b.name));
     },
     async isConnected(userId, toolkit) {
@@ -384,7 +384,7 @@ export class ComposioService {
 
   private toolkitList: { at: number; list: Promise<TriggerToolkit[]> } | null = null;
 
-  /** Apps with triggers; the catalog changes slowly, so it's kept for an hour. */
+  /** Every app; the catalog changes slowly, so it's kept for an hour. */
   toolkits(): Promise<TriggerToolkit[]> {
     if (!this.toolkitList || Date.now() - this.toolkitList.at > 60 * 60 * 1000) {
       const list = this.client().toolkits();

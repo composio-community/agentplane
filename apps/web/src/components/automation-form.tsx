@@ -11,6 +11,7 @@ import { agentStatuses, client } from "~/lib/client.ts";
 import { cn } from "~/lib/cn.ts";
 import { RUNTIME_MODES } from "~/lib/format.ts";
 import { useApp } from "~/lib/store.ts";
+import { composioToolkits } from "~/lib/toolkits.ts";
 import { type DropdownOption, Select } from "./dropdown.tsx";
 import { Field, inputClass } from "./modal.tsx";
 import { ModelPicker } from "./model-picker.tsx";
@@ -29,15 +30,9 @@ type Schema = {
   anyOf?: Schema[];
 };
 
-let toolkitList: Promise<TriggerToolkit[]> | null = null;
-
-/** Apps with triggers, asked once per page load. */
+/** Only apps that can start a thread. */
 function triggerToolkits(): Promise<TriggerToolkit[]> {
-  toolkitList ??= client.request("composio.toolkits", {}).catch((error: unknown) => {
-    toolkitList = null;
-    throw error;
-  });
-  return toolkitList;
+  return composioToolkits().then((list) => list.filter((toolkit) => toolkit.triggers > 0));
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));

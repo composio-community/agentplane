@@ -4,15 +4,18 @@ import {
   describeRule,
   type PermissionRule,
   type ProviderKeysStatus,
+  type TriggerToolkit,
 } from "@agentplane/contracts";
 import { useRouter } from "@tanstack/react-router";
 import { FlaskConical, Plug, Trash2, Zap } from "lucide-react";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, Suspense, use, useState } from "react";
 import { client, refreshAgentStatuses } from "~/lib/client.ts";
 import { cn } from "~/lib/cn.ts";
 import { RUNTIME_MODES, relativeTime } from "~/lib/format.ts";
 import { useApp } from "~/lib/store.ts";
+import { composioToolkitsOrNone } from "~/lib/toolkits.ts";
 import { NewAutomation } from "./automation-form.tsx";
+import { Select } from "./dropdown.tsx";
 import { Field, inputClass } from "./modal.tsx";
 import { Button, Chip, Eyebrow } from "./ui.tsx";
 
@@ -176,8 +179,6 @@ function KeysSection({ keys }: { keys: ProviderKeysStatus }) {
 
 function ComposioSection({ status }: { status: ComposioStatus }) {
   const [key, setKey] = useState("");
-  const [toolkit, setToolkit] = useState("");
-  const [connectMessage, setConnectMessage] = useState<string | null>(null);
   const { busy, error, run } = useAction();
 
   const save = (event: FormEvent) => {
@@ -185,15 +186,6 @@ function ComposioSection({ status }: { status: ComposioStatus }) {
     void run(() => client.request("composio.configure", { apiKey: key.trim() })).then((result) => {
       if (result) setKey("");
     });
-  };
-
-  const connect = async (event: FormEvent) => {
-    event.preventDefault();
-    setConnectMessage(null);
-    const result = await run(() => client.request("composio.connect", { toolkit: toolkit.trim() }));
-    if (!result) return;
-    if (result.connected) setConnectMessage(`${toolkit} is already connected.`);
-    else if (result.url) window.open(result.url, "_blank", "noopener");
   };
 
   return (
@@ -272,22 +264,13 @@ function ComposioSection({ status }: { status: ComposioStatus }) {
         </label>
 
         {status.configured ? (
-          <form onSubmit={connect} className="flex flex-col gap-2 border-t pt-4">
-            <Eyebrow>Connect an app</Eyebrow>
-            <div className="flex gap-2">
-              <input
-                className={inputClass}
-                placeholder="linear, github, sentry…"
-                value={toolkit}
-                onChange={(event) => setToolkit(event.target.value)}
-              />
-              <Button type="submit" disabled={busy || !toolkit.trim()}>
-                <Plug /> Connect
-              </Button>
-            </div>
-            <ToolkitChips onPick={setToolkit} />
-            {connectMessage ? <p className="text-caption text-success">{connectMessage}</p> : null}
-          </form>
+          <Suspense
+            fallback={
+              <p className="border-t pt-4 text-caption text-foreground/45">Loading apps…</p>
+            }
+          >
+            <ConnectApp />
+          </Suspense>
         ) : null}
 
         {status.error ? <p className="text-caption text-warning">{status.error}</p> : null}
@@ -297,17 +280,86 @@ function ComposioSection({ status }: { status: ComposioStatus }) {
   );
 }
 
-function ToolkitChips({ onPick }: { onPick: (toolkit: string) => void }) {
+/** Connect an app to this machine's Composio user; agents and automations then use it. */
+function ConnectApp() {
+  const toolkits = use(composioToolkitsOrNone());
+  const [toolkit, setToolkit] = useState("");
+  const [connectMessage, setConnectMessage] = useState<string | null>(null);
+  const { busy, error, run } = useAction();
+  const appName = toolkits.find((entry) => entry.slug === toolkit)?.name ?? toolkit;
+
+  const connect = async (event: FormEvent) => {
+    event.preventDefault();
+    setConnectMessage(null);
+    const result = await run(() => client.request("composio.connect", { toolkit: toolkit.trim() }));
+    if (!result) return;
+    if (result.connected) setConnectMessage(`${appName} is already connected.`);
+    else if (result.url) window.open(result.url, "_blank", "noopener");
+  };
+
+  return (
+    <form onSubmit={connect} className="flex flex-col gap-2 border-t pt-4">
+      <Eyebrow>Connect an app</Eyebrow>
+      <div className="flex gap-2">
+        {toolkits.length > 0 ? (
+          <Select
+            label="App"
+            placeholder="Choose an app"
+            value={toolkit}
+            options={toolkits.map((entry) => ({ value: entry.slug, label: entry.name }))}
+            onChange={(slug) => {
+              setToolkit(slug);
+              setConnectMessage(null);
+            }}
+          />
+        ) : (
+          // The catalog couldn't be loaded; take the slug by hand.
+          <input
+            className={inputClass}
+            placeholder="linear, github, sentry…"
+            value={toolkit}
+            onChange={(event) => setToolkit(event.target.value)}
+          />
+        )}
+        <Button type="submit" disabled={busy || !toolkit.trim()}>
+          <Plug /> Connect
+        </Button>
+      </div>
+      <ToolkitChips
+        toolkits={toolkits}
+        onPick={(slug) => {
+          setToolkit(slug);
+          setConnectMessage(null);
+        }}
+      />
+      {connectMessage ? <p className="text-caption text-success">{connectMessage}</p> : null}
+      {error ? <p className="text-caption text-destructive">{error}</p> : null}
+    </form>
+  );
+}
+
+/** Shortcuts for the usual apps, when the catalog has them. */
+function ToolkitChips({
+  toolkits,
+  onPick,
+}: {
+  toolkits: TriggerToolkit[];
+  onPick: (toolkit: string) => void;
+}) {
+  // Without a catalog, every shortcut is offered: the slug is typed in anyway.
+  const known = new Set(toolkits.map((entry) => entry.slug));
+  const shown =
+    toolkits.length > 0 ? POPULAR_TOOLKITS.filter((slug) => known.has(slug)) : POPULAR_TOOLKITS;
   return (
     <div className="flex flex-wrap gap-1.5">
-      {POPULAR_TOOLKITS.map((toolkit) => (
+      {shown.map((slug) => (
         <button
-          key={toolkit}
+          key={slug}
           type="button"
-          onClick={() => onPick(toolkit)}
+          onClick={() => onPick(slug)}
           className="cursor-pointer rounded-xs border bg-background px-1.5 py-0.5 text-mono-xs text-foreground/55 uppercase tracking-wider hover:text-foreground"
         >
-          {toolkit}
+          {slug}
         </button>
       ))}
     </div>
