@@ -232,6 +232,7 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
     remote,
     terminals,
     providerKeys,
+    settings,
   );
   void remote.start().catch((error) => console.error("[remote]", errorMessage(error)));
 
@@ -281,6 +282,11 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
       const url = new URL(req.url ?? "/", "http://localhost");
       if (url.pathname === "/auth") {
         const session = desktopAuth.signIn(url.searchParams.get("token") ?? "");
+        if (!session && desktopAuth.authenticate(req)) {
+          // An old link (history, a bookmark) in a browser that's already signed in.
+          res.writeHead(302, { location: "/" }).end();
+          return;
+        }
         if (!session) {
           page(
             res,

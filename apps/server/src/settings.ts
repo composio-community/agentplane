@@ -27,6 +27,8 @@ export type Settings = {
   keys: { openrouter: string | null };
   /** Setup commands from a project's agentplane.json the user approved, by project. */
   trustedSetups: Record<string, string>;
+  /** The editor "Open in editor" uses (an id from editors.ts), once picked. */
+  editor: string | null;
 };
 
 export type DesktopSession = {
@@ -50,6 +52,7 @@ function defaults(): Settings {
     desktop: { sessions: [] },
     keys: { openrouter: null },
     trustedSetups: {},
+    editor: null,
   };
 }
 
@@ -74,6 +77,7 @@ export class SettingsStore {
         desktop: { ...base.desktop, ...saved.desktop },
         keys: { ...base.keys, ...saved.keys },
         trustedSetups: saved.trustedSetups ?? {},
+        editor: saved.editor ?? null,
       };
     } catch {
       return base;

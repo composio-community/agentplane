@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { access, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +32,7 @@ const MAX_OUTPUT = 20_000;
 
 export const claudeAdapter: ProviderAdapter = {
   provider: "claude",
+  canSteer: true,
   async listModels() {
     const executable = await requireBinary("claude", "Claude Code");
     // A session that never gets a message: enough for Claude Code to start
@@ -89,6 +91,10 @@ class ClaudeSession implements ProviderSession {
   private currentMessageId: string | null = null;
   private turnActive = false;
   private interrupting = false;
+  /** Messages sent mid-turn that Claude hasn't taken in yet (by uuid). */
+  private readonly steering = new Set<string>();
+  /** Usage across the results one of our turns spans (a late steer runs as its own). */
+  private turnUsage = { input: 0, output: 0, cached: 0 };
   /** One plan item per turn; ids must stay unique across resumed sessions. */
   private planItemId = `plan:${newId()}`;
   private stderrTail = "";
@@ -138,11 +144,32 @@ class ClaudeSession implements ProviderSession {
     this.turnActive = true;
     this.interrupting = false;
     this.planItemId = `plan:${newId()}`;
+    this.steering.clear();
+    this.turnUsage = { input: 0, output: 0, cached: 0 };
     this.input.push({
       type: "user",
+      uuid: randomUUID(),
       message: { role: "user", content: text },
       parent_tool_use_id: null,
     });
+  }
+
+  /**
+   * Claude folds a message that arrives mid-turn into the turn between tool
+   * rounds. If no round is left it runs right after as its own turn, which
+   * handleResult keeps inside ours.
+   */
+  async steer(text: string): Promise<boolean> {
+    if (!this.turnActive || this.interrupting) return false;
+    const uuid = randomUUID();
+    this.steering.add(uuid);
+    this.input.push({
+      type: "user",
+      uuid,
+      message: { role: "user", content: text },
+      parent_tool_use_id: null,
+    });
+    return true;
   }
 
   async interrupt(): Promise<void> {
@@ -351,14 +378,21 @@ class ClaudeSession implements ProviderSession {
 
   private handleResult(message: Extract<SDKMessage, { type: "result" }>): void {
     if (!this.turnActive) return;
-    this.turnActive = false;
     const usage = message.usage;
     const cached = usage.cache_read_input_tokens ?? 0;
+    this.turnUsage.input += usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + cached;
+    this.turnUsage.output += usage.output_tokens;
+    this.turnUsage.cached += cached;
+    for (const uuid of message.user_message_uuids ?? []) this.steering.delete(uuid);
     const status = this.interrupting
       ? "interrupted"
       : message.subtype === "success" && !message.is_error
         ? "completed"
         : "failed";
+    // A steered message missed the last tool round; Claude answers it next.
+    if (status === "completed" && this.steering.size > 0) return;
+    this.steering.clear();
+    this.turnActive = false;
     this.interrupting = false;
     // Tools still open when a turn ends were cut off.
     for (const [id, call] of this.toolCalls) {
@@ -369,9 +403,9 @@ class ClaudeSession implements ProviderSession {
       type: "turn.completed",
       status,
       usage: {
-        inputTokens: usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + cached,
-        outputTokens: usage.output_tokens,
-        cachedInputTokens: cached,
+        inputTokens: this.turnUsage.input,
+        outputTokens: this.turnUsage.output,
+        cachedInputTokens: this.turnUsage.cached,
       },
       costUsd: message.total_cost_usd,
       error:

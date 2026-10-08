@@ -17,6 +17,7 @@ import type {
   Turn,
 } from "@agentplane/contracts";
 import { describeRule, type PermissionRule, ruleFor } from "@agentplane/contracts";
+import { changes, diff, dropCheckpoints, RevertConflict, revert, snapshot } from "./checkpoints.ts";
 import type { ServerConfig } from "./config.ts";
 import { createWorktree, isGitRepo } from "./git.ts";
 import { buildHandoff, type Handoff, type HandoffMode, inlineHandoff } from "./handoff.ts";
@@ -24,6 +25,7 @@ import { agentEnvironment } from "./providers/detect.ts";
 import { classifySetup } from "./providers/setup.ts";
 import type { AdapterEvent, ProviderAdapter, ProviderSession } from "./providers/types.ts";
 import type { RuleBook } from "./rules.ts";
+import { gitStatus, ShipError, type ShipRequest, type ShipResult, ship } from "./ship.ts";
 import type { Store } from "./store.ts";
 import { errorMessage, newId } from "./util.ts";
 import { describeSetup, prepareWorktree, runSetup } from "./worktree-setup.ts";
@@ -69,6 +71,12 @@ export class Orchestrator {
   private readonly itemMeta = new Map<string, ItemMeta>();
   /** Worktree setup in progress (copying env files, cloning deps); sessions wait for it. */
   private readonly setups = new Map<string, Promise<void>>();
+  /** The "after" checkpoint still being taken, per thread (the next turn waits for it). */
+  private readonly checkpointing = new Map<string, Promise<void>>();
+  /** Something the agent must hear with the next message (e.g. a revert). */
+  private readonly agentNotes = new Map<string, string>();
+  /** A queued message the user stopped the turn for, per thread; it goes next. */
+  private readonly sendAfterStop = new Map<string, string>();
   /** Approvals answered by a saved rule, so the settled item can say which. */
   private readonly autoApproved = new Map<string, string>();
   /** Last running cost total reported by each thread's current provider session. */
@@ -327,9 +335,11 @@ export class Orchestrator {
   }
 
   async deleteThread(threadId: string): Promise<void> {
-    this.requireThread(threadId);
+    const thread = this.requireThread(threadId);
     await this.closeSession(threadId);
+    this.sendAfterStop.delete(threadId);
     this.store.commit([{ type: "thread.deleted", threadId }]);
+    void dropCheckpoints(thread.cwd, threadId);
   }
 
   renameThread(threadId: string, title: string): void {
@@ -337,10 +347,99 @@ export class Orchestrator {
   }
 
   /**
-   * Commits the turn and returns; the provider work runs in the background and
-   * streams back as events. Throws synchronously if the turn can't start.
+   * Starts a turn, or queues the message while the agent is still working (the
+   * queue runs as turns complete). Commits and returns; the provider work runs
+   * in the background and streams back as events.
    */
-  sendMessage(threadId: string, text: string): void {
+  sendMessage(threadId: string, text: string): { queued: boolean } {
+    if (this.activeTurns.has(threadId)) {
+      const thread = this.requireThread(threadId);
+      const queue = [...(thread.queue ?? []), { id: newId(), text, createdAt: Date.now() }];
+      this.store.commit([this.threadPatch(threadId, { queue })]);
+      return { queued: true };
+    }
+    this.startTurn(threadId, text);
+    return { queued: false };
+  }
+
+  /** Take a message off the queue; its text comes back so it can be edited. */
+  unqueue(threadId: string, messageId: string): { text: string } {
+    const thread = this.requireThread(threadId);
+    const message = thread.queue?.find((queued) => queued.id === messageId);
+    if (!message) throw new UserError("That message isn't queued any more.");
+    const queue = (thread.queue ?? []).filter((queued) => queued.id !== messageId);
+    this.store.commit([this.threadPatch(threadId, { queue })]);
+    return { text: message.text };
+  }
+
+  /**
+   * Deliver a queued message now. An agent that can take it mid-turn gets it
+   * at its next step; any other is stopped and the message goes next.
+   */
+  async sendQueued(
+    threadId: string,
+    messageId: string,
+  ): Promise<{ delivery: "steered" | "interrupted" | "started" | "queued" }> {
+    const message = this.requireThread(threadId).queue?.find((queued) => queued.id === messageId);
+    if (!message) throw new UserError("That message isn't queued any more.");
+    const turnId = this.activeTurns.get(threadId);
+    if (!turnId) {
+      this.unqueue(threadId, messageId);
+      this.startTurn(threadId, message.text);
+      return { delivery: "started" };
+    }
+    const pending = this.opening.has(threadId) ? undefined : this.sessions.get(threadId);
+    const session = pending ? await pending.catch(() => null) : null;
+    if (session?.steer) {
+      if (!(await session.steer(message.text))) {
+        // The turn is ending; the message stays first in line for the next one.
+        return { delivery: "queued" };
+      }
+      const thread = this.requireThread(threadId);
+      this.store.commit([
+        this.threadPatch(threadId, {
+          queue: (thread.queue ?? []).filter((queued) => queued.id !== messageId),
+        }),
+        {
+          type: "item.upserted",
+          item: this.toItem(
+            threadId,
+            `user:${newId()}`,
+            { kind: "user_message", text: message.text, steered: true },
+            turnId,
+          ),
+        },
+      ]);
+      return { delivery: "steered" };
+    }
+    this.sendAfterStop.set(threadId, messageId);
+    await this.interrupt(threadId);
+    return { delivery: "interrupted" };
+  }
+
+  /** After a turn ends: start the next queued message, if it should go on its own. */
+  private drainQueue(threadId: string, status: Turn["status"]): void {
+    const chosen = this.sendAfterStop.get(threadId);
+    this.sendAfterStop.delete(threadId);
+    const thread = this.store.getThread(threadId);
+    if (!thread?.queue?.length || this.activeTurns.has(threadId)) return;
+    // After a stop or a failure the queue waits for the user, unless they
+    // stopped the turn to send one of these.
+    const next = chosen
+      ? thread.queue.find((queued) => queued.id === chosen)
+      : status === "completed"
+        ? thread.queue[0]
+        : undefined;
+    if (!next) return;
+    this.store.commit([
+      this.threadPatch(threadId, {
+        queue: thread.queue.filter((queued) => queued.id !== next.id),
+      }),
+    ]);
+    this.startTurn(threadId, next.text);
+  }
+
+  private startTurn(threadId: string, text: string): void {
     const thread = this.requireThread(threadId);
     if (this.activeTurns.has(threadId)) {
       throw new UserError("The agent is still working. Wait for it or interrupt it first.");
@@ -378,12 +477,18 @@ export class Orchestrator {
     try {
       const session = await this.ensureSession(thread);
       const current = this.store.getThread(threadId) ?? thread;
+      await this.checkpointBefore(current, turnId);
       const handoff = this.planHandoff(current, turnId);
       let prompt = text;
       let native = false;
       if (handoff) {
         native = (await session.injectHistory?.(handoff.entries).catch(() => false)) ?? false;
         if (!native) prompt = inlineHandoff(handoff, text);
+      }
+      const note = this.agentNotes.get(threadId);
+      if (note) {
+        this.agentNotes.delete(threadId);
+        prompt = `${note}\n\n${prompt}`;
       }
       await session.startTurn(prompt);
       this.delivered.add(turnId);
@@ -427,6 +532,144 @@ export class Orchestrator {
         error: errorMessage(error),
       });
     }
+  }
+
+  // ─── Checkpoints: what each turn changed, and putting it back ──────────────
+
+  private async checkpointBefore(thread: Thread, turnId: string): Promise<void> {
+    await this.checkpointing.get(thread.id);
+    const before = await snapshot(thread.cwd, `refs/agentplane/${thread.id}/${turnId}/before`);
+    const turn = this.store.getTurn(turnId);
+    if (!before || !turn || this.activeTurns.get(thread.id) !== turnId) return;
+    this.store.commit([
+      {
+        type: "turn.updated",
+        turn: { ...turn, checkpoint: { before, after: null, files: [], reverted: false } },
+      },
+    ]);
+  }
+
+  private checkpointAfter(threadId: string, turnId: string): void {
+    const run = (async () => {
+      const thread = this.store.getThread(threadId);
+      const turn = this.store.getTurn(turnId);
+      if (!thread || !turn?.checkpoint) return;
+      const after = await snapshot(thread.cwd, `refs/agentplane/${threadId}/${turnId}/after`);
+      if (!after) return;
+      const files = await changes(thread.cwd, turn.checkpoint.before, after).catch(() => []);
+      const latest = this.store.getTurn(turnId);
+      if (!latest?.checkpoint) return;
+      this.store.commit([
+        {
+          type: "turn.updated",
+          turn: { ...latest, checkpoint: { ...latest.checkpoint, after, files } },
+        },
+      ]);
+    })()
+      .catch((error) => console.error("[checkpoint]", errorMessage(error)))
+      .finally(() => {
+        if (this.checkpointing.get(threadId) === run) this.checkpointing.delete(threadId);
+      });
+    this.checkpointing.set(threadId, run);
+  }
+
+  private settledCheckpoint(threadId: string, turnId: string) {
+    const thread = this.requireThread(threadId);
+    const checkpoint = this.store.getTurn(turnId)?.checkpoint;
+    if (!checkpoint?.after) {
+      throw new UserError("This turn has no recorded changes (not a git repo, or still running).");
+    }
+    return { thread, checkpoint: { ...checkpoint, after: checkpoint.after } };
+  }
+
+  async turnDiff(threadId: string, turnId: string) {
+    await this.checkpointing.get(threadId);
+    const { thread, checkpoint } = this.settledCheckpoint(threadId, turnId);
+    return { files: await diff(thread.cwd, checkpoint.before, checkpoint.after) };
+  }
+
+  async revertTurn(
+    threadId: string,
+    turnId: string,
+    overwrite = false,
+  ): Promise<{ files: string[] }> {
+    if (this.activeTurns.has(threadId)) {
+      throw new UserError("Stop the agent before reverting; it's still working.");
+    }
+    await this.checkpointing.get(threadId);
+    const { thread, checkpoint } = this.settledCheckpoint(threadId, turnId);
+    if (checkpoint.reverted) throw new UserError("This turn was already reverted.");
+    const files = await revert(thread.cwd, checkpoint.before, checkpoint.after, overwrite).catch(
+      (error: unknown) => {
+        throw error instanceof RevertConflict ? new UserError(error.message) : error;
+      },
+    );
+    const turn = this.store.getTurn(turnId);
+    if (!turn?.checkpoint) return { files };
+    const list = files.map((file) => `\`${file}\``).join(", ");
+    this.store.commit([
+      {
+        type: "turn.updated",
+        turn: { ...turn, checkpoint: { ...turn.checkpoint, reverted: true } },
+      },
+      {
+        type: "item.upserted",
+        item: this.toItem(threadId, `revert:${turnId}`, {
+          kind: "notice",
+          text: `Reverted a turn: put back ${files.length === 1 ? "1 file" : `${files.length} files`} (${list}).`,
+        }),
+      },
+    ]);
+    this.agentNotes.set(
+      threadId,
+      `[Note from the user: I reverted the changes you made in an earlier turn. These files are back to how they were before it: ${files.join(", ")}. Re-read them before relying on what you wrote.]`,
+    );
+    return { files };
+  }
+
+  // ─── Shipping: commit, push and open a PR from a thread ─────────────────────
+
+  async ship(threadId: string, request: ShipRequest): Promise<ShipResult> {
+    const thread = this.requireThread(threadId);
+    if (this.activeTurns.has(threadId)) {
+      throw new UserError("Wait for the agent to finish (or stop it) before committing.");
+    }
+    let result: ShipResult;
+    try {
+      result = await ship(thread.cwd, request);
+    } catch (error) {
+      throw error instanceof ShipError ? new UserError(error.message) : error;
+    }
+    const branch = result.branch ?? (await gitStatus(thread.cwd)).branch;
+    const done = [
+      result.sha ? `Committed \`${result.sha}\`${branch ? ` on \`${branch}\`` : ""}` : null,
+      result.pushed ? (result.sha ? "pushed" : `Pushed \`${branch ?? "HEAD"}\``) : null,
+      result.prUrl ? `opened [a pull request](${result.prUrl})` : null,
+    ].filter(Boolean);
+    if (done.length === 0) return result;
+    this.store.commit([
+      ...(result.branch && thread.branch !== result.branch
+        ? [this.threadPatch(threadId, { branch: result.branch })]
+        : []),
+      {
+        type: "item.upserted",
+        item: this.toItem(threadId, `ship:${newId()}`, {
+          kind: "notice",
+          text: `${done.join(" · ")}.`,
+        }),
+      },
+    ]);
+    const note = `[Note from the user: ${[
+      result.sha ? `I committed the changes so far as ${result.sha}` : null,
+      branch ? `on branch ${branch}` : null,
+      result.pushed ? "and pushed it" : null,
+      result.prUrl ? `; the pull request is ${result.prUrl}` : null,
+    ]
+      .filter(Boolean)
+      .join(" ")}.]`;
+    const earlier = this.agentNotes.get(threadId);
+    this.agentNotes.set(threadId, earlier ? `${earlier}\n${note}` : note);
+    return result;
   }
 
   private agentLabel(provider: string): string {
@@ -485,7 +728,7 @@ export class Orchestrator {
   retry(threadId: string): void {
     const last = this.store.getItems(threadId).findLast((item) => item.kind === "user_message");
     if (last?.kind !== "user_message") throw new UserError("There's no message to retry yet.");
-    this.sendMessage(threadId, last.text);
+    this.startTurn(threadId, last.text);
   }
 
   async interrupt(threadId: string): Promise<void> {
@@ -892,8 +1135,11 @@ export class Orchestrator {
       }),
     );
     this.store.commit(events);
+    if (turnId && turn?.checkpoint) this.checkpointAfter(threadId, turnId);
 
     this.scheduleIdleClose(threadId);
+    // Let the adapter finish wrapping up the turn before it gets the next one.
+    setTimeout(() => this.drainQueue(threadId, event.status), 0);
   }
 
   private scheduleIdleClose(threadId: string): void {

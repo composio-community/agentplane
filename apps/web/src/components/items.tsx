@@ -14,6 +14,7 @@ import {
   ChevronRight,
   Circle,
   CircleDot,
+  CornerDownLeft,
   FilePen,
   FileText,
   Globe,
@@ -35,6 +36,8 @@ import { client, refreshAgentStatuses } from "~/lib/client.ts";
 import { cn } from "~/lib/cn.ts";
 import { duration, usageLabel } from "~/lib/format.ts";
 import { useAgentLabel, useApp } from "~/lib/store.ts";
+import { Diff } from "./diff.tsx";
+import { TurnChanges } from "./turn-changes.tsx";
 import { Button, Eyebrow } from "./ui.tsx";
 
 /** Paths inside the thread's folder read better relative to it. */
@@ -84,10 +87,15 @@ export const TimelineItem = memo(function TimelineItem({
 
 function UserMessage({ item }: { item: ItemOf<"user_message"> }) {
   return (
-    <div className="flex justify-end">
+    <div className="flex flex-col items-end gap-1">
       <div className="max-w-[85%] whitespace-pre-wrap rounded-xl border bg-card px-4 py-2.5 text-body-sm">
         {item.text}
       </div>
+      {item.steered ? (
+        <Eyebrow className="flex items-center gap-1 text-mono-xs">
+          <CornerDownLeft className="size-3" /> Sent while it worked
+        </Eyebrow>
+      ) : null}
     </div>
   );
 }
@@ -201,29 +209,6 @@ function ToolStatus({ status }: { status: ItemOf<"tool_call">["status"] }) {
   }
   if (status === "failed") return <X className="size-3.5 shrink-0 text-destructive" />;
   return <Check className="size-3.5 shrink-0 text-success" />;
-}
-
-function Diff({ text }: { text: string }) {
-  return (
-    <pre className="max-h-80 overflow-auto rounded-xs bg-background py-1.5 text-mono-sm">
-      {text.split("\n").map((line, index) => (
-        <div
-          // Lines have no identity beyond their position.
-          // biome-ignore lint/suspicious/noArrayIndexKey: see above
-          key={index}
-          className={cn(
-            "px-2",
-            line.startsWith("+") && !line.startsWith("+++") && "bg-success/10 text-success",
-            line.startsWith("-") && !line.startsWith("---") && "bg-destructive/10 text-destructive",
-            (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) &&
-              "text-foreground/40",
-          )}
-        >
-          {line || " "}
-        </div>
-      ))}
-    </pre>
-  );
 }
 
 function RequestCard({
@@ -730,12 +715,15 @@ export const TurnFooter = memo(function TurnFooter({ turn }: { turn: Turn }) {
       : null,
   ].filter(Boolean);
   return (
-    <div className="flex items-center gap-3">
-      <div className="h-px flex-1 bg-border" />
-      <Eyebrow className={cn(turn.status === "failed" && "text-destructive")}>
-        {parts.join(" · ")}
-      </Eyebrow>
-      <div className="h-px flex-1 bg-border" />
+    <div className="flex flex-col gap-3">
+      <TurnChanges turn={turn} />
+      <div className="flex items-center gap-3">
+        <div className="h-px flex-1 bg-border" />
+        <Eyebrow className={cn(turn.status === "failed" && "text-destructive")}>
+          {parts.join(" · ")}
+        </Eyebrow>
+        <div className="h-px flex-1 bg-border" />
+      </div>
     </div>
   );
 });

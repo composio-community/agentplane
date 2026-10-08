@@ -1,8 +1,9 @@
 # Agentplane
 
 A local control plane for coding agents. Run Claude Code, Codex, Cursor, Gemini, Pi and 35+ other
-agents side by side on your own machine, each in its own git worktree. Approve what they want to
-do, watch them work, and get pinged when one needs you.
+agents side by side on your own machine, in your project folder or, when you want them isolated,
+each in its own git worktree. Approve what they want to do, watch them work, and get pinged when
+one needs you.
 
 > Early and moving fast; expect breaking changes.
 
@@ -34,10 +35,11 @@ under `~/.agentplane/worktrees/<project>/<id>` on a branch named `agentplane/<id
 - **Fast.** Agents are started while you open a thread or type, so sending a message only waits
   on the model (Claude: 6.5s → 2.9s to first output; Codex: 7.7s → 2.4s). The agent list is served
   from cache and refreshed in the background.
-- **Worktrees in under a second.** New threads get their own git worktree with your gitignored
-  `.env` files copied and every `node_modules` cloned copy-on-write (APFS `clonefile`; reflinks on
-  Linux): 561 MB of dependencies in 0.6s, no reinstall. Each thread gets its own `PORT` range so dev
-  servers don't collide. Add an `agentplane.json` to run a setup command too:
+- **Worktrees in under a second, when you want one.** Threads work in your project folder by
+  default. Tick "Isolate in a git worktree" and a thread gets its own worktree instead, with your
+  gitignored `.env` files copied and every `node_modules` cloned copy-on-write (APFS `clonefile`;
+  reflinks on Linux): 561 MB of dependencies in 0.6s, no reinstall. Each thread gets its own `PORT`
+  range so dev servers don't collide. Add an `agentplane.json` to run a setup command too:
   `{ "setup": "pnpm install --offline", "copy": ["config/local.yml"] }`.
 - **One permission policy for every agent.** "Always allow" saves a project rule (a command family
   like `pnpm test`, all file edits, or one tool) that applies to Claude, Codex, Pi and every ACP
@@ -57,6 +59,19 @@ under `~/.agentplane/worktrees/<project>/<id>` on a branch named `agentplane/<id
   receives it as native history (`thread/inject_items`); others get it ahead of your message. If an
   agent's old session can't be restored (missing transcript), the fresh one gets everything. A
   timeline divider shows each handoff.
+- **Every turn is a checkpoint.** Before and after each turn the working tree is snapshotted (in
+  hidden git refs; your index and branches are untouched), so every turn ends with what it changed:
+  "3 files changed +12 −4", the diff per file, and **Revert**. Revert undoes just that turn and keeps
+  later edits; if those overlap, it asks before overwriting. The agent is told on your next message.
+- **Talk to it while it works.** Messages you send mid-turn queue up and run when the turn ends
+  (edit or drop them first). **Steer** hands one to the running turn instead: Claude, Codex, Pi
+  and OpenCode take it at their next step; other agents are stopped and get it next.
+- **Ship from the thread.** Commit everything, push, and open a pull request in one dialog, with
+  your own git identity, hooks and `gh` login. It offers a branch when you're on the default one,
+  shows an existing PR, and leaves a note in the thread so the agent knows.
+- **Open in your editor.** One click opens the thread's folder in VS Code, Cursor, Zed, Windsurf,
+  Sublime, JetBrains IDEs or Xcode (whichever are installed); each changed file opens at its first
+  edit.
 - **A terminal per thread.** `⌘J` opens shells in the thread's folder or worktree (with its `PORT`),
   docked under the conversation or beside it, in tabs (zsh, bash, fish, whatever's installed). Shells
   keep running when you switch threads or reload.
@@ -64,7 +79,7 @@ under `~/.agentplane/worktrees/<project>/<id>` on a branch named `agentplane/<id
   agent's real error, a button that opens its sign-in in Terminal, "Try again", and the agents that
   are ready right now ("Use Codex instead" retries your message there).
 - **Keyboard first.** `⌘K` command palette (threads, actions, permissions), `⌘J` terminal,
-  `⌥↑`/`⌥↓` between threads, `Enter` to send, `Esc` to stop.
+  `⌥↑`/`⌥↓` between threads, `Enter` to send (or queue), `Esc` to stop.
 - **Composio built in.** Add a Composio API key in Settings and:
   - every agent gets the same tools for GitHub, Linear, Slack, Sentry and 1000+ apps (one MCP
     endpoint injected into Claude, Codex and ACP sessions; agents show a connect link the first time
@@ -76,13 +91,16 @@ under `~/.agentplane/worktrees/<project>/<id>` on a branch named `agentplane/<id
 ## How it works
 
 ```
-Browser / (later) Electron window
+Browser
         │  one WebSocket (127.0.0.1 only, origin-checked)
         ▼
-apps/server ── orchestrator ──┬── Claude adapter: Agent SDK query() → your `claude` binary
-        │                     └── Codex adapter: `codex app-server` (JSON-RPC over stdio)
+apps/server ── orchestrator ──┬── Claude: Agent SDK query() → your `claude` binary
+        │                     ├── Codex: `codex app-server` (JSON-RPC over stdio)
+        │                     ├── Pi: `pi --mode rpc` (JSON lines over stdio)
+        │                     ├── OpenCode: `opencode serve` (HTTP + server-sent events)
+        │                     └── everything else: ACP over stdio
         ▼
-SQLite (node:sqlite): append-only event log + projections
+SQLite (node:sqlite): append-only event log + projections; git refs for checkpoints
 ```
 
 - **One local server owns everything.** Agent processes, git and state live in a Node process; the
@@ -113,7 +131,7 @@ SQLite (node:sqlite): append-only event log + projections
 | Google Antigravity | ACP (Google's ACP server) | Downloaded from dl.google.com on first use |
 | Cursor | ACP (`cursor-agent acp`) | PATH, else ACP registry |
 | Grok | ACP (`grok agent stdio`) | PATH, else ACP registry |
-| OpenCode | ACP (`opencode acp`) | PATH, else ACP registry |
+| OpenCode | `opencode serve` (HTTP API and event stream, on a random port with a random password) | PATH, else ACP registry |
 | Gemini CLI, Qwen Code, GitHub Copilot, Goose, Devin, Amp, Kimi | ACP | PATH, else ACP registry |
 | 27 more (Cline, Auggie, Kilo, Factory Droid, Mistral Vibe, …) | ACP | [ACP registry](https://github.com/agentclientprotocol/registry) |
 
@@ -128,7 +146,7 @@ SQLite (node:sqlite): append-only event log + projections
 
   | Agent | On an OpenRouter key | Notes |
   | --- | --- | --- |
-  | OpenCode | yes | Starts on Kimi K2.6 unless you pick a model (its own default refuses other apps) |
+  | OpenCode | yes | Starts on Kimi K2.6 unless you pick a model or your OpenCode config sets one |
   | Pi | yes | Every OpenRouter model shows up in its model menu |
   | Grok | yes, when not signed in to xAI | Runs from its own profile with Grok Build, Grok 4.3, Kimi K2.6, Gemini Flash-Lite |
   | Qwen Code | yes, when not signed in to Qwen | OpenAI-compatible mode; the model is fixed per session |
@@ -145,14 +163,14 @@ SQLite (node:sqlite): append-only event log + projections
 
 Each thread has a runtime mode, changeable at any time:
 
-| Mode | Claude | Codex | ACP agents & Pi |
+| Mode | Claude | Codex | Pi, OpenCode & ACP agents |
 | --- | --- | --- | --- |
 | Supervised | `default` (asks via the UI) | `untrusted` + read-only sandbox | Ask for everything but reads |
 | Auto-edit | `acceptEdits` | `on-request` + workspace-write sandbox | Edits allowed, ask for the rest |
 | Full access | `bypassPermissions` | `never` + no sandbox | Allow everything |
 
-For ACP agents the policy is applied on our side when the agent asks permission, and the agent's
-own mode is switched too where it has one (Antigravity, Gemini).
+For Pi, OpenCode and ACP agents the policy is applied on our side when the agent asks permission,
+and the agent's own mode is switched too where it has one (Antigravity, Gemini).
 
 Use full access in a worktree.
 
@@ -171,6 +189,8 @@ otherwise:
 - **Repos don't run code on their own.** A project's `agentplane.json` `setup` command waits for
   your OK in the thread (run once, or always for that exact command); `copy` can't reach outside
   the repo.
+- **Your computer only.** A paired phone can chat, approve and steer, but can't open terminals or
+  editors, commit or push, or change settings.
 - **"Always allow" stays narrow.** Rules cover a command family (`pnpm test`), never a chained or
   redirected command; for programs that run arbitrary code (`node`, `python`, `npx`, `bash`,
   `find`, …) a rule covers only the exact command.
@@ -192,21 +212,6 @@ pnpm spike claude "Say hi" --mode supervised --cwd /tmp/somewhere
 `pnpm spike` drives one adapter directly and prints its normalized events. It's the fastest way to
 see what a provider sends after a CLI upgrade. To extend the Codex adapter, regenerate the protocol
 types with `codex app-server generate-ts --out <dir>`.
-
-## Roadmap
-
-- [x] Claude + Codex adapters, approvals, questions, plans, interrupt, resume
-- [x] Worktree per thread, event log, live streaming, reconnect, notifications
-- [ ] Per-turn git checkpoints: real diffs and "revert this turn"
-- [ ] Follow-ups while a turn runs (queue / steer)
-- [x] Embedded terminal (tabs, any installed shell, bottom or right)
-- [x] Per-project setup scripts, env file copying, port ranges per worktree
-- [ ] Open in editor
-- [ ] Commit / push / PR from a thread
-- [x] ACP adapter + ACP registry (Antigravity, Cursor, Grok, Gemini, Copilot, OpenCode, 35+ more)
-- [x] Pi over RPC
-- [ ] Native OpenCode adapter (`opencode serve` HTTP API) and Cursor SDK adapter
-- [ ] Electron desktop shell
 
 ## License
 

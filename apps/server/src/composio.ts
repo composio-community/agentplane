@@ -152,6 +152,23 @@ export function sdkComposioApi(apiKey: string): ComposioApi {
         { userId },
         (error) => onError(JSON.stringify(error)),
       );
+      // The SDK hides its Pusher client; when it's reachable, log drops and
+      // reconnects (events sent while it's disconnected are not redelivered).
+      const pusher = (
+        composio.triggers as unknown as {
+          pusherService?: {
+            pusherClient?: {
+              connection?: { bind: (event: string, fn: (s: unknown) => void) => void };
+            };
+          };
+        }
+      ).pusherService?.pusherClient;
+      pusher?.connection?.bind("state_change", (states) => {
+        const { previous, current } = states as { previous: string; current: string };
+        if (current !== "connected" || previous !== "connecting") {
+          console.log(`[composio] trigger stream ${previous} → ${current}`);
+        }
+      });
       return () => composio.triggers.unsubscribe();
     },
   };

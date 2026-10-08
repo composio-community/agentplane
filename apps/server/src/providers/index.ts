@@ -17,6 +17,7 @@ import { type AcpAgentSpec, type AcpLaunch, acpAdapter } from "./acp.ts";
 import { claudeAdapter } from "./claude.ts";
 import { codexAdapter } from "./codex.ts";
 import { agentEnvironment, binaryVersion, which } from "./detect.ts";
+import { type OpencodeLaunch, opencodeAdapter } from "./opencode.ts";
 import { piAdapter } from "./pi.ts";
 import { AgentRegistry, availability, type RegistryAgent } from "./registry.ts";
 import { AUTH_CHECKS, type AuthState, classifySetup, openTerminal } from "./setup.ts";
@@ -24,7 +25,15 @@ import type { ProviderAdapter } from "./types.ts";
 
 type Probe = Omit<
   ProviderStatus,
-  "provider" | "label" | "protocol" | "installHint" | "group" | "description" | "auth" | "canSignIn"
+  | "provider"
+  | "label"
+  | "protocol"
+  | "installHint"
+  | "group"
+  | "description"
+  | "auth"
+  | "canSignIn"
+  | "canSteer"
 >;
 
 export type AgentDefinition = {
@@ -234,8 +243,13 @@ export class AgentCatalog {
         signInArgs: ["login"],
         label: "Cursor",
         binary: "cursor-agent",
-        args: () => ["acp"],
+        // Its updater otherwise starts on a timer inside the agent process.
+        args: () => ["--disable-auto-update", "acp"],
         registryId: "cursor",
+        adjust: (launch) =>
+          launch.args.includes("--disable-auto-update")
+            ? launch
+            : { ...launch, args: ["--disable-auto-update", ...launch.args] },
         checkPathSpeaksAcp: true,
         signInHint:
           "Run `cursor-agent login` in a terminal. Older cursor-agent builds lack ACP: `cursor-agent update`.",
@@ -285,34 +299,7 @@ export class AgentCatalog {
             (params.update as { sessionUpdate?: string } | undefined)?.sessionUpdate ===
               "turn_completed"),
       }),
-      this.acp({
-        id: "opencode",
-        signInArgs: ["auth", "login"],
-        label: "OpenCode",
-        binary: "opencode",
-        // Errors only go to stderr, which is how we learn why a turn ended silently.
-        args: () => ["acp", "--print-logs", "--log-level", "ERROR"],
-        registryId: "opencode",
-        signInHint: "Run `opencode auth login` in a terminal.",
-        installHint: "curl -fsSL https://opencode.ai/install | bash, then `opencode auth login`",
-        description: "Open-source agent for any model provider.",
-        // OpenCode allows every tool by default and so never asks; make it
-        // ask, and the thread's permission mode answers.
-        env: {
-          OPENCODE_CONFIG_CONTENT: JSON.stringify({
-            permission: { edit: "ask", bash: "ask", webfetch: "ask" },
-          }),
-        },
-        keyEnv: openRouterEnv,
-        // Its own default is a free OpenCode model that refuses other clients;
-        // with OpenRouter models available, start on one of those instead.
-        preferredDefault: (current, options) =>
-          current?.id.startsWith("opencode/")
-            ? (OPENROUTER_DEFAULTS.map((id) => `openrouter/${id}`).find((id) =>
-                options.some((option) => option.id === id),
-              ) ?? null)
-            : null,
-      }),
+      this.opencode(),
       this.acp({
         id: "gemini",
         label: "Gemini CLI",
@@ -416,6 +403,74 @@ export class AgentCatalog {
     ];
   }
 
+  /**
+   * OpenCode, driven through `opencode serve` (usage, cost, mid-turn messages)
+   * rather than its ACP mode: its CLI on PATH, else the ACP registry's build.
+   */
+  private opencode(): AgentDefinition {
+    const registry = this.registry;
+    const installHint = "curl -fsSL https://opencode.ai/install | bash, then `opencode auth login`";
+    const launch = async (context: {
+      notify: (text: string) => void;
+      allowInstall?: boolean;
+    }): Promise<OpencodeLaunch> => {
+      const path = await which("opencode");
+      if (path) return { command: path };
+      const agent = await registry.find("opencode");
+      if (!agent) throw new Error(`OpenCode isn't installed. ${installHint}`);
+      const resolved = await registry.launch(agent, context.notify, {
+        allowInstall: context.allowInstall ?? true,
+      });
+      return { command: resolved.command, ...(resolved.env ? { env: resolved.env } : {}) };
+    };
+    return {
+      id: "opencode",
+      label: "OpenCode",
+      protocol: "native",
+      group: "featured",
+      installHint,
+      description: "Open-source agent for any model provider.",
+      binary: "opencode",
+      signInArgs: ["auth", "login"],
+      keyEnv: openRouterEnv,
+      adapter: opencodeAdapter({
+        launch,
+        env: async () => openRouterEnv(await this.keys()) ?? {},
+        // Its own default (when it has one) is a free OpenCode model meant for
+        // its own apps; with OpenRouter models available, start on one of those.
+        preferredDefault: (current, options) =>
+          !current || current.id.startsWith("opencode/")
+            ? (OPENROUTER_DEFAULTS.map((id) => `openrouter/${id}`).find((id) =>
+                options.some((option) => option.id === id),
+              ) ?? null)
+            : null,
+      }),
+      probe: async () => {
+        const path = await which("opencode");
+        if (path) {
+          return {
+            installed: true,
+            source: "path",
+            note: null,
+            path,
+            version: await binaryVersion(path, ["--version"]),
+          };
+        }
+        const agent = await registry.find("opencode");
+        if (!agent)
+          return { installed: false, source: null, note: null, path: null, version: null };
+        const { available, note } = await availability(agent);
+        return {
+          installed: available,
+          source: "registry",
+          note,
+          path: null,
+          version: agent.version,
+        };
+      },
+    };
+  }
+
   private acp(featured: FeaturedAcp): AgentDefinition {
     const {
       binary,
@@ -466,7 +521,8 @@ export class AgentCatalog {
       ...(keyEnv ? { keyEnv } : {}),
       adapter: acpAdapter({ ...spec, launch }),
       probe: async () => {
-        const path = binary ? await which(binary) : null;
+        // A CLI on PATH too old to speak ACP doesn't count; launch skips it too.
+        const path = await usablePath();
         if (path) {
           return {
             installed: true,
@@ -672,7 +728,7 @@ export class AgentCatalog {
       const statuses = JSON.parse(await readFile(this.statusCachePath, "utf8")) as ProviderStatus[];
       // Only trust it if it describes the same catalog.
       return statuses.length === known.size &&
-        statuses.every((s) => known.has(s.provider) && "auth" in s)
+        statuses.every((s) => known.has(s.provider) && "canSteer" in s)
         ? statuses
         : null;
     } catch {
@@ -694,6 +750,7 @@ export class AgentCatalog {
           ...probe,
           auth: await this.authState(definition, probe.path),
           canSignIn: probe.path !== null && definition.signInArgs !== null,
+          canSteer: definition.adapter.canSteer ?? false,
         };
       }),
     );

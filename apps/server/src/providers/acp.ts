@@ -144,10 +144,16 @@ class AcpSession implements ProviderSession {
   private planItemId = `plan:${newId()}`;
   private replaying = false;
   private turnActive = false;
+  /** The user stopped this turn (some agents still report a normal end). */
+  private cancelling = false;
   /** Whether the agent produced anything this turn; some swallow errors and end silently. */
   private turnHadOutput = false;
   private costUsd: number | null = null;
   private stderrTail = "";
+  /** When the agent last sent a session update (see the settle in startTurn). */
+  private lastUpdateAt = 0;
+  /** The last message closed with its turn, so stray late text can join it. */
+  private lastClosed: TextSegment | null = null;
   private stdoutNoise = "";
   private exited = false;
 
@@ -299,16 +305,26 @@ class AcpSession implements ProviderSession {
 
   async startTurn(text: string): Promise<void> {
     this.turnActive = true;
+    this.cancelling = false;
+    this.lastClosed = null;
     this.turnHadOutput = false;
     this.planItemId = `plan:${newId()}`;
     // The prompt request stays open for the whole turn; it resolves with the
     // stop reason once the agent is done.
     this.connection.prompt({ sessionId: this.sessionId, prompt: [{ type: "text", text }] }).then(
-      (response) => {
+      async (response) => {
+        // Some agents (OpenCode) answer the prompt a moment before their last
+        // message chunks arrive. Let the updates go quiet before closing the
+        // turn, so the reply isn't split around the "Done" line.
+        const settleBy = Date.now() + 1_000;
+        while (Date.now() - this.lastUpdateAt < 150 && Date.now() < settleBy) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
         const usage = response.usage;
         this.completeTurn({
           status:
-            response.stopReason === "cancelled"
+            // Some agents (OpenCode) report a cancelled turn as a normal end.
+            response.stopReason === "cancelled" || this.cancelling
               ? "interrupted"
               : response.stopReason === "refusal"
                 ? "failed"
@@ -337,6 +353,7 @@ class AcpSession implements ProviderSession {
     for (const respond of this.pending.values()) respond({ kind: "cancel" });
     this.pending.clear();
     if (!this.turnActive) return;
+    this.cancelling = true;
     await this.connection.cancel({
       sessionId: this.sessionId,
       ...(this.spec.cancelMeta ? { _meta: this.spec.cancelMeta } : {}),
@@ -483,6 +500,7 @@ class AcpSession implements ProviderSession {
   }
 
   private onSessionUpdate(notification: SessionNotification): void {
+    this.lastUpdateAt = Date.now();
     if (this.replaying || notification.sessionId !== this.sessionId) return;
     const update = notification.update;
     switch (update.sessionUpdate) {
@@ -601,6 +619,19 @@ class AcpSession implements ProviderSession {
   }
 
   private appendText(kind: TextSegment["kind"], text: string, messageId: string | null): void {
+    if (!this.turnActive) {
+      const last = this.lastClosed;
+      if (last && last.kind === kind) {
+        last.text += text;
+        this.emit({
+          type: "item",
+          id: last.id,
+          body: { kind, text: last.text, streaming: false },
+          final: true,
+        });
+      }
+      return;
+    }
     if (
       !this.segment ||
       this.segment.kind !== kind ||
@@ -625,6 +656,7 @@ class AcpSession implements ProviderSession {
     const segment = this.segment;
     this.segment = null;
     if (!segment?.text.trim()) return;
+    this.lastClosed = segment;
     this.emit({
       type: "item",
       id: segment.id,

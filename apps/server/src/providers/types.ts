@@ -69,6 +69,12 @@ export interface ProviderSession {
    * when unsupported; the history then goes in front of the next message.
    */
   injectHistory?(entries: Array<{ role: "user" | "assistant"; text: string }>): Promise<boolean>;
+  /**
+   * Hand the running turn another user message, taken in at the agent's next
+   * step; the turn still ends with a single turn.completed. False if it
+   * couldn't (no turn running, or the agent refused).
+   */
+  steer?(text: string): Promise<boolean>;
 }
 
 export type RequestResponse =
@@ -78,6 +84,8 @@ export type RequestResponse =
 
 export interface ProviderAdapter {
   readonly provider: Provider;
+  /** Its sessions implement `steer`. */
+  readonly canSteer?: boolean;
   openSession(options: OpenSessionOptions): Promise<ProviderSession>;
   /** Ask the agent which models it can run. */
   listModels?(): Promise<ModelOption[]>;

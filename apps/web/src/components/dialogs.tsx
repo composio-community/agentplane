@@ -95,7 +95,8 @@ function NewThreadDialog({ projectId }: { projectId: string }) {
   const navigate = useNavigate();
   const [provider, setProvider] = useState<Provider>("claude");
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("supervised");
-  const [worktree, setWorktree] = useState(project?.isGitRepo ?? false);
+  // Work in the folder the user picked; a worktree is opt-in.
+  const [worktree, setWorktree] = useState(false);
   const [model, setModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -176,7 +177,7 @@ function NewThreadDialog({ projectId }: { projectId: string }) {
             </span>
             <span className="text-caption text-foreground/50">
               {project.isGitRepo
-                ? "New branch from HEAD, so parallel agents never touch your checkout."
+                ? "Work on a copy on its own branch, so parallel agents never touch your checkout."
                 : "This folder isn't a git repo."}
             </span>
           </span>

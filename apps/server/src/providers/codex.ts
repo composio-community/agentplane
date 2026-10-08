@@ -44,6 +44,7 @@ type CodexModel = {
 
 export const codexAdapter: ProviderAdapter = {
   provider: "codex",
+  canSteer: true,
   async listModels() {
     const executable = await requireBinary("codex", "Codex");
     const rpc: StdioRpc = new StdioRpc(
@@ -231,6 +232,22 @@ class CodexSession implements ProviderSession {
       sandboxPolicy: sandboxPolicy(this.mode, this.cwd),
     });
     this.turnId = response.turn.id;
+  }
+
+  /** Codex takes it at its next model request, inside the same turn. */
+  async steer(text: string): Promise<boolean> {
+    if (!this.turnActive || !this.turnId) return false;
+    try {
+      await this.rpc.request("turn/steer", {
+        threadId: this.threadId,
+        input: [{ type: "text", text, text_elements: [] }],
+        expectedTurnId: this.turnId,
+      });
+      return true;
+    } catch {
+      // The turn just ended, or it's a review/compact turn that can't be steered.
+      return false;
+    }
   }
 
   /** Earlier conversation as real Responses API history, ahead of the next turn. */

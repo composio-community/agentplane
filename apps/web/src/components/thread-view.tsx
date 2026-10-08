@@ -1,22 +1,40 @@
 import type { Item, RuntimeMode, Thread, Turn } from "@agentplane/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUp, FolderOpen, GitBranch, Square, SquareTerminal, Trash2, Zap } from "lucide-react";
+import {
+  ArrowUp,
+  ChevronDown,
+  CornerDownLeft,
+  FolderOpen,
+  GitBranch,
+  ListPlus,
+  Pencil,
+  Square,
+  SquareArrowOutUpRight,
+  SquareTerminal,
+  Trash2,
+  X,
+  Zap,
+} from "lucide-react";
 import {
   type FormEvent,
   type KeyboardEvent,
   lazy,
   type ReactNode,
   Suspense,
+  use,
   useMemo,
   useState,
 } from "react";
 import { client } from "~/lib/client.ts";
 import { cn } from "~/lib/cn.ts";
+import { editorList, openInEditor, usePickedEditor } from "~/lib/editors.ts";
 import { costLabel, RUNTIME_MODES, shortenPath } from "~/lib/format.ts";
 import { type ThreadDetail, useAgentLabel, useApp } from "~/lib/store.ts";
 import { terminalsAvailable, toggleTerminal, useTerminals } from "~/lib/terminal-state.ts";
+import { Menu } from "./dropdown.tsx";
 import { TimelineItem, TurnFooter } from "./items.tsx";
 import { ThreadAgentSelect, ThreadModelSelect } from "./model-picker.tsx";
+import { ShipButton } from "./ship-dialog.tsx";
 import { Button, Chip, Eyebrow, Kbd, Segmented, STATUS_LABEL, StatusDot } from "./ui.tsx";
 
 // xterm is only downloaded once someone opens a terminal.
@@ -115,6 +133,17 @@ function ThreadHeader({ thread }: { thread: Thread }) {
           options={RUNTIME_MODES}
           className="ml-1"
         />
+        {terminalsAvailable ? (
+          <Suspense fallback={null}>
+            <OpenInEditor threadId={thread.id} />
+          </Suspense>
+        ) : null}
+        {terminalsAvailable ? (
+          <ShipButton
+            threadId={thread.id}
+            disabled={thread.status === "running" || thread.status === "needs-input"}
+          />
+        ) : null}
         {terminalsAvailable ? <TerminalToggle threadId={thread.id} /> : null}
         <Button
           variant="ghost"
@@ -127,6 +156,44 @@ function ThreadHeader({ thread }: { thread: Thread }) {
         </Button>
       </div>
     </header>
+  );
+}
+
+/** Open the thread's folder in the user's editor; the caret picks another one. */
+function OpenInEditor({ threadId }: { threadId: string }) {
+  const { editors, preferred } = use(editorList());
+  const picked = usePickedEditor((state) => state.id) ?? preferred;
+  const current = editors.find((editor) => editor.id === picked) ?? editors[0];
+  if (!current) return null;
+  return (
+    <div className="flex items-center rounded-md hover:bg-foreground/[0.03]">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="rounded-r-none pr-1.5"
+        title={`Open this thread's folder in ${current.label}`}
+        onClick={() => void openInEditor(threadId)}
+      >
+        <SquareArrowOutUpRight />
+        <span className="hidden text-mono-xs uppercase tracking-wider 2xl:inline">
+          {current.label}
+        </span>
+      </Button>
+      <Menu
+        label="Open in…"
+        heading="Open in"
+        align="end"
+        items={editors.map((editor) => ({
+          id: editor.id,
+          label: editor.label,
+          hint: editor.id === current.id ? "Default" : null,
+          onSelect: () => void openInEditor(threadId, { editor: editor.id }),
+        }))}
+        triggerClassName="inline-flex h-7 cursor-pointer items-center rounded-md rounded-l-none px-1 text-foreground/50 hover:bg-foreground/5 hover:text-foreground"
+      >
+        <ChevronDown className="size-3.5" />
+      </Menu>
+    </div>
   );
 }
 
@@ -214,7 +281,7 @@ function Composer({ thread }: { thread: Thread }) {
   const send = async (event?: FormEvent) => {
     event?.preventDefault();
     const message = text.trim();
-    if (!message || busy || sending) return;
+    if (!message || sending) return;
     setSending(true);
     setError(null);
     try {
@@ -242,6 +309,12 @@ function Composer({ thread }: { thread: Thread }) {
   return (
     <form onSubmit={send} className="border-t bg-background px-5 pt-3 pb-4">
       <div className="mx-auto flex max-w-prose flex-col gap-2">
+        {thread.queue?.length ? (
+          <QueuedMessages
+            thread={thread}
+            onEdit={(queued) => setText((current) => (current ? `${current}\n${queued}` : queued))}
+          />
+        ) : null}
         <div
           className={cn(
             "flex flex-col rounded-xl border bg-card transition-colors focus-within:border-foreground/25",
@@ -258,9 +331,7 @@ function Composer({ thread }: { thread: Thread }) {
             onFocus={() =>
               void client.request("thread.prewarm", { threadId: thread.id }).catch(() => undefined)
             }
-            placeholder={
-              busy ? "The agent is working. Press Esc to interrupt." : `Message ${agent}…`
-            }
+            placeholder={busy ? "Queue a follow-up for when it's done…" : `Message ${agent}…`}
             className="max-h-64 min-h-11 resize-none bg-transparent px-4 pt-3 text-body-sm outline-none [field-sizing:content] placeholder:text-foreground/35"
           />
           <div className="flex items-center justify-between gap-2 px-2 pt-1 pb-2">
@@ -274,9 +345,16 @@ function Composer({ thread }: { thread: Thread }) {
               ) : null}
             </span>
             {busy ? (
-              <Button variant="secondary" size="sm" onClick={interrupt}>
-                <Square className="size-3! fill-current" /> Stop
-              </Button>
+              <div className="flex items-center gap-1.5">
+                {text.trim() ? (
+                  <Button type="submit" variant="secondary" size="sm" disabled={sending}>
+                    <ListPlus /> Queue
+                  </Button>
+                ) : null}
+                <Button variant="secondary" size="sm" onClick={interrupt}>
+                  <Square className="size-3! fill-current" /> Stop
+                </Button>
+              </div>
             ) : (
               <Button
                 type="submit"
@@ -296,5 +374,94 @@ function Composer({ thread }: { thread: Thread }) {
         </p>
       </div>
     </form>
+  );
+}
+
+/**
+ * Follow-ups waiting for the agent. "Steer" hands one to the running turn
+ * (taken in at its next step); agents that can't take it mid-turn are stopped
+ * and get it next. After a stop or a failure the queue waits for the user.
+ */
+function QueuedMessages({ thread, onEdit }: { thread: Thread; onEdit: (text: string) => void }) {
+  const canSteer = useApp((state) => state.agents[thread.provider]?.canSteer ?? false);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const working = thread.status === "running" || thread.status === "needs-input";
+  const queue = thread.queue ?? [];
+
+  const act = async (messageId: string, action: () => Promise<unknown>) => {
+    setBusyId(messageId);
+    setError(null);
+    try {
+      await action();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+  const sendNow = (messageId: string) =>
+    act(messageId, () => client.request("thread.sendQueued", { threadId: thread.id, messageId }));
+  const remove = (messageId: string, edit: boolean) =>
+    act(messageId, async () => {
+      const { text } = await client.request("thread.unqueue", { threadId: thread.id, messageId });
+      if (edit) onEdit(text);
+    });
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Eyebrow className="flex items-center gap-1.5">
+        <ListPlus className="size-3.5" /> Queued · {queue.length}
+        {working ? null : <span className="normal-case tracking-normal">· waiting for you</span>}
+      </Eyebrow>
+      {queue.map((queued) => (
+        <div
+          key={queued.id}
+          className="flex items-start gap-2 rounded-md border border-dashed bg-card/60 py-1.5 pr-1.5 pl-3"
+        >
+          <p className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap pt-0.5 text-body-sm text-foreground/75">
+            {queued.text}
+          </p>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busyId !== null}
+              onClick={() => void sendNow(queued.id)}
+              title={
+                !working
+                  ? "Send it now"
+                  : canSteer
+                    ? "Send it now; the agent takes it in at its next step"
+                    : "Stop the agent and send this next"
+              }
+            >
+              <CornerDownLeft /> {!working ? "Send" : canSteer ? "Steer" : "Stop & send"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Edit"
+              title="Edit"
+              disabled={busyId !== null}
+              onClick={() => void remove(queued.id, true)}
+            >
+              <Pencil />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Remove from queue"
+              title="Remove"
+              disabled={busyId !== null}
+              onClick={() => void remove(queued.id, false)}
+            >
+              <X />
+            </Button>
+          </div>
+        </div>
+      ))}
+      {error ? <p className="text-caption text-destructive">{error}</p> : null}
+    </div>
   );
 }

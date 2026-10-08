@@ -6,11 +6,14 @@ import {
   Methods,
 } from "@agentplane/contracts";
 import type { ComposioService } from "./composio.ts";
+import { editorTarget, listEditors, OpenError, openInEditor } from "./editors.ts";
 import { type Orchestrator, UserError } from "./orchestrator.ts";
 import type { ProviderKeyStore } from "./provider-keys.ts";
 import type { AgentCatalog } from "./providers/index.ts";
 import type { RemoteAccess } from "./remote.ts";
 import type { RuleBook } from "./rules.ts";
+import type { SettingsStore } from "./settings.ts";
+import { gitStatus } from "./ship.ts";
 import { suggestDirs } from "./suggest.ts";
 import { availableShells, type Peer, type Terminals } from "./terminals.ts";
 
@@ -32,6 +35,7 @@ export function createHandlers(
   remote: RemoteAccess,
   terminals: Terminals,
   keys: ProviderKeyStore,
+  settings: SettingsStore,
 ): Handlers {
   const peerOf = (context: CallContext): Peer => {
     if (!context.peer) throw new UserError("Terminals need a live connection.");
@@ -50,6 +54,9 @@ export function createHandlers(
       orchestrator.retry(threadId);
       return {};
     },
+    "turn.diff": ({ threadId, turnId }) => orchestrator.turnDiff(threadId, turnId),
+    "turn.revert": ({ threadId, turnId, overwrite }) =>
+      orchestrator.revertTurn(threadId, turnId, overwrite),
     "agents.models": ({ provider, refresh }) => catalog.models(provider, refresh ?? false),
     "fs.suggestDirs": ({ prefix }) => suggestDirs(prefix),
     "project.create": ({ path }) => orchestrator.createProject(path),
@@ -66,11 +73,11 @@ export function createHandlers(
       orchestrator.renameThread(threadId, title);
       return {};
     },
-    "thread.sendMessage": ({ threadId, text }) => {
-      // Acknowledges once the turn is committed; the work streams back as events.
-      orchestrator.sendMessage(threadId, text);
-      return {};
-    },
+    // Acknowledges once the turn (or the queued message) is committed; the
+    // work streams back as events.
+    "thread.sendMessage": ({ threadId, text }) => orchestrator.sendMessage(threadId, text),
+    "thread.sendQueued": ({ threadId, messageId }) => orchestrator.sendQueued(threadId, messageId),
+    "thread.unqueue": ({ threadId, messageId }) => orchestrator.unqueue(threadId, messageId),
     "thread.prewarm": ({ threadId }) => {
       orchestrator.prewarm(threadId);
       return {};
@@ -134,6 +141,28 @@ export function createHandlers(
     },
     "terminal.list": ({ threadId }) => terminals.list(threadId),
     "terminal.shells": () => availableShells(),
+    "git.status": ({ threadId }) => gitStatus(orchestrator.terminalTarget(threadId).cwd),
+    "git.ship": ({ threadId, ...request }) => orchestrator.ship(threadId, request),
+    "editor.list": async () => {
+      const editors = await listEditors();
+      const saved = settings.get().editor;
+      const preferred = editors.some((editor) => editor.id === saved) ? saved : null;
+      return { editors, preferred: preferred ?? editors[0]?.id ?? null };
+    },
+    "editor.open": async ({ threadId, path, line, editor }) => {
+      const id = editor ?? settings.get().editor ?? (await listEditors())[0]?.id;
+      if (!id) throw new UserError("No editor found on this computer.");
+      try {
+        const target = await editorTarget(orchestrator.terminalTarget(threadId).cwd, path, line);
+        await openInEditor(id, target);
+      } catch (error) {
+        throw error instanceof OpenError ? new UserError(error.message) : error;
+      }
+      if (editor && editor !== settings.get().editor) {
+        settings.update((current) => ({ ...current, editor }));
+      }
+      return {};
+    },
     "terminal.open": ({ threadId, cols, rows, shell }, context) =>
       terminals.open(threadId, cols, rows, peerOf(context), shell),
     "terminal.attach": ({ terminalId }, context) => terminals.attach(terminalId, peerOf(context)),

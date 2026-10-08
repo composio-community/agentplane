@@ -116,6 +116,7 @@ export function piAdapter(
 ): ProviderAdapter {
   return {
     provider: "pi",
+    canSteer: true,
     async listModels() {
       const answers = await piQuery(
         ["models", "state"],
@@ -278,11 +279,24 @@ class PiSession implements ProviderSession {
     }
   }
 
+  /** Pi takes it once the current tool calls finish, before its next model call. */
+  async steer(text: string): Promise<boolean> {
+    if (!this.turnActive || this.interrupting) return false;
+    const response = await this.request({
+      type: "prompt",
+      message: text,
+      streamingBehavior: "steer",
+    }).catch(() => null);
+    return response !== null && response.success !== false;
+  }
+
   async interrupt(): Promise<void> {
     for (const respond of this.pending.values()) respond({ kind: "cancel" });
     this.pending.clear();
     if (!this.turnActive) return;
     this.interrupting = true;
+    // Abort would still run steered messages Pi hasn't taken in yet.
+    await this.request({ type: "clear_queue" }).catch(() => undefined);
     await this.request({ type: "abort" });
   }
 
